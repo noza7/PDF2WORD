@@ -12,6 +12,7 @@ class ConversionThread(QThread):
     progress_signal = pyqtSignal(int)
     finished_signal = pyqtSignal(bool, str)
     superscript_fixed_signal = pyqtSignal(int)  # 新增信号，传递修复的上标数量
+    paragraph_fixed_signal = pyqtSignal(int)  # 新增信号，传递修复的段落数量
     
     def __init__(self, pdf_path, word_path):
         super().__init__()
@@ -31,6 +32,13 @@ class ConversionThread(QThread):
                     self.superscript_fixed_signal.emit(superscript_count)
                 except Exception as e:
                     print(f"修复上标数字失败: {str(e)}")
+                
+                # 修复编号段落问题
+                try:
+                    paragraph_count = self.fix_numbered_paragraphs(self.word_path)
+                    self.paragraph_fixed_signal.emit(paragraph_count)
+                except Exception as e:
+                    print(f"修复编号段落失败: {str(e)}")
                 
                 self.finished_signal.emit(True, "")
                 return
@@ -196,6 +204,138 @@ class ConversionThread(QThread):
             
             # 返回处理的上标数量
             return superscript_count
+            
+        finally:
+            # 退出Word应用
+            word.Quit()
+            
+            # 释放COM资源
+            pythoncom.CoUninitialize()
+
+    def fix_numbered_paragraphs(self, docx_path):
+        """识别并修复编号段落，确保每个编号项都是单独的段落并顶格显示"""
+        import win32com.client
+        import pythoncom
+        import re
+        
+        # 初始化COM
+        pythoncom.CoInitialize()
+        
+        try:
+            # 创建Word应用实例
+            word = win32com.client.Dispatch("Word.Application")
+            word.Visible = False
+            
+            # 打开Word文档
+            doc = word.Documents.Open(docx_path)
+            
+            # 记录处理的段落数量
+            fixed_count = 0
+            
+            # 定义编号模式的正则表达式
+            # 匹配中文数字编号：一、二、三、...（包括前面可能有句号的情况）
+            chinese_number_pattern = r'([。．.]\s*)?[一二三四五六七八九十百千万亿]+[、，,．.．:：]'
+            # 匹配阿拉伯数字编号：1. 2. 3. ...（包括前面可能有句号的情况）
+            arabic_number_pattern = r'([。．.]\s*)?[0-9]+[、，,．.．:：]'
+            # 匹配带括号的编号：(1) （2） ...（包括前面可能有句号的情况）
+            parenthesis_pattern = r'([。．.]\s*)?[(（][0-9]+[)）]'
+            
+            # 组合所有模式
+            number_patterns = [chinese_number_pattern, arabic_number_pattern, parenthesis_pattern]
+            
+            # 遍历文档中的所有段落
+            for i in range(1, doc.Paragraphs.Count + 1):
+                para = doc.Paragraphs(i)
+                text = para.Range.Text.strip()
+                
+                # 如果段落为空，跳过
+                if not text:
+                    continue
+                
+                # 检查段落中是否包含编号模式
+                for pattern in number_patterns:
+                    # 在段落中查找编号模式
+                    matches = list(re.finditer(pattern, text))
+                    
+                    # 如果没有匹配，继续下一个模式
+                    if not matches:
+                        continue
+                    
+                    # 跳过第一个匹配（如果它在段落开头）
+                    start_index = 0
+                    if matches[0].start() <= 2:  # 允许段落开头有少量空格
+                        start_index = 1
+                        
+                        # 如果第一个匹配在段落开头，确保它顶格显示
+                        if matches[0].start() > 0:
+                            # 选择段落
+                            para.Range.Select()
+                            
+                            # 设置段落格式为顶格（左对齐，无缩进）
+                            word.Selection.ParagraphFormat.LeftIndent = 0
+                            word.Selection.ParagraphFormat.FirstLineIndent = 0
+                    
+                    # 处理其余匹配
+                    for match_index in range(start_index, len(matches)):
+                        match = matches[match_index]
+                        
+                        # 检查匹配前是否有句号
+                        has_period_before = bool(re.search(r'[。．.]', match.group(0)))
+                        
+                        # 找到段落中间的编号，需要在此处分段
+                        position = para.Range.Start + match.start()
+                        
+                        # 如果编号前有句号，在句号后分段
+                        if has_period_before:
+                            # 找到句号的位置
+                            period_pos = match.group(0).find('。')
+                            if period_pos == -1:
+                                period_pos = match.group(0).find('．')
+                            if period_pos == -1:
+                                period_pos = match.group(0).find('.')
+                            
+                            if period_pos != -1:
+                                # 调整分段位置到句号后
+                                position = para.Range.Start + match.start() + period_pos + 1
+                        
+                        # 创建一个范围到分段位置
+                        split_range = doc.Range(position, position)
+                        
+                        # 插入段落标记（回车符）
+                        split_range.InsertParagraphAfter()
+                        
+                        # 获取新插入的段落
+                        new_para_index = i + 1  # 新段落的索引
+                        if new_para_index <= doc.Paragraphs.Count:
+                            new_para = doc.Paragraphs(new_para_index)
+                            
+                            # 选择新段落
+                            new_para.Range.Select()
+                            
+                            # 设置段落格式为顶格（左对齐，无缩进）
+                            word.Selection.ParagraphFormat.LeftIndent = 0
+                            word.Selection.ParagraphFormat.FirstLineIndent = 0
+                        
+                        # 计数
+                        fixed_count += 1
+                        
+                        # 由于插入了新段落，需要重新获取当前段落的文本
+                        text = para.Range.Text.strip()
+                        
+                        # 重新开始查找，因为文本已经改变
+                        break
+            
+            # 保存文档
+            doc.Save()
+            
+            # 关闭文档
+            doc.Close()
+            
+            # 打印处理结果
+            print(f"已修复 {fixed_count} 处编号段落")
+            
+            # 返回处理的段落数量
+            return fixed_count
             
         finally:
             # 退出Word应用
@@ -444,6 +584,7 @@ class PDFToWordConverter(QMainWindow):
         self.conversion_thread.progress_signal.connect(self.update_progress)
         self.conversion_thread.finished_signal.connect(self.conversion_finished)
         self.conversion_thread.superscript_fixed_signal.connect(self.update_superscript_info)
+        self.conversion_thread.paragraph_fixed_signal.connect(self.update_paragraph_info)
         self.conversion_thread.start()
     
     def update_progress(self, value):
@@ -484,6 +625,12 @@ class PDFToWordConverter(QMainWindow):
             self.status_label.setText(f"转换成功! 已修复 {count} 处上标格式")
         else:
             self.status_label.setText("转换成功! 未发现上标格式")
+
+    def update_paragraph_info(self, count):
+        """更新段落修复信息"""
+        if count > 0:
+            current_text = self.status_label.text()
+            self.status_label.setText(f"{current_text}, 已修复 {count} 处编号段落")
 
 
 if __name__ == "__main__":
