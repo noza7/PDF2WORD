@@ -51,13 +51,17 @@ class ConversionThread(QThread):
             self.finished_signal.emit(False, str(e))
     
     def convert_with_word(self):
-        """使用Word打开PDF并另存为Word文档"""
+        """使用Word打开PDF并另存为Word文档，自动处理弹窗"""
         if platform.system() != "Windows":
             raise Exception("Word COM自动化仅在Windows系统上可用")
         
         try:
             import win32com.client
             import pythoncom
+            import win32gui
+            import win32con
+            import time
+            import threading
             
             # 初始化COM
             pythoncom.CoInitialize()
@@ -66,9 +70,51 @@ class ConversionThread(QThread):
             word = win32com.client.Dispatch("Word.Application")
             word.Visible = False
             
-            # 不再尝试设置可能不存在的自动格式选项
+            # 禁用警告和弹窗
+            word.DisplayAlerts = False  # 禁用大多数警告弹窗
+            word.Options.ConfirmConversions = False  # 禁用格式转换确认
+            
             # 发送进度信号
             self.progress_signal.emit(20)
+            
+            # 创建一个线程来处理可能出现的对话框
+            def handle_dialogs():
+                # 等待一小段时间，让Word有机会打开文件
+                time.sleep(2)
+                
+                # 尝试查找并关闭对话框
+                for _ in range(10):  # 尝试10次
+                    # 查找常见的Word对话框标题
+                    dialog_titles = ["Microsoft Word", "警告", "Warning", "转换", "Conversion", "安全警告", "Security Warning"]
+                    
+                    for title in dialog_titles:
+                        # 查找对话框
+                        hwnd = win32gui.FindWindow(None, title)
+                        if hwnd != 0:
+                            # 尝试点击"确定"或"是"按钮
+                            try:
+                                # 查找按钮并点击
+                                ok_button = win32gui.FindWindowEx(hwnd, 0, "Button", "确定")
+                                if ok_button == 0:
+                                    ok_button = win32gui.FindWindowEx(hwnd, 0, "Button", "OK")
+                                    if ok_button == 0:
+                                        ok_button = win32gui.FindWindowEx(hwnd, 0, "Button", "是")
+                                    if ok_button == 0:
+                                        ok_button = win32gui.FindWindowEx(hwnd, 0, "Button", "Yes")
+                                
+                                if ok_button != 0:
+                                    win32gui.PostMessage(ok_button, win32con.BM_CLICK, 0, 0)
+                                    print(f"自动点击了对话框 '{title}' 中的按钮")
+                            except Exception as e:
+                                print(f"处理对话框时出错: {str(e)}")
+                    
+                    # 等待一小段时间再次检查
+                    time.sleep(1)
+            
+            # 启动处理对话框的线程
+            dialog_thread = threading.Thread(target=handle_dialogs)
+            dialog_thread.daemon = True
+            dialog_thread.start()
             
             try:
                 # 打开PDF文件
