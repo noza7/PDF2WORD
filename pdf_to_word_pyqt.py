@@ -213,7 +213,7 @@ class ConversionThread(QThread):
             pythoncom.CoUninitialize()
 
     def fix_numbered_paragraphs(self, docx_path):
-        """识别并修复编号段落，确保每个编号项都是单独的段落并顶格显示"""
+        """识别并修复编号段落，确保每个编号项都是单独的段落并保持格式一致，去掉首行缩进"""
         import win32com.client
         import pythoncom
         import re
@@ -252,6 +252,47 @@ class ConversionThread(QThread):
                 if not text:
                     continue
                 
+                # 保存当前段落的格式信息，以便应用到新段落
+                para.Range.Select()
+                current_format = {
+                    'LeftIndent': word.Selection.ParagraphFormat.LeftIndent,
+                    'RightIndent': word.Selection.ParagraphFormat.RightIndent,
+                    'FirstLineIndent': word.Selection.ParagraphFormat.FirstLineIndent,
+                    'Alignment': word.Selection.ParagraphFormat.Alignment,
+                    'LineSpacing': word.Selection.ParagraphFormat.LineSpacing,
+                    'SpaceBefore': word.Selection.ParagraphFormat.SpaceBefore,
+                    'SpaceAfter': word.Selection.ParagraphFormat.SpaceAfter,
+                    'Font': {
+                        'Name': word.Selection.Font.Name,
+                        'Size': word.Selection.Font.Size,
+                        'Bold': word.Selection.Font.Bold,
+                        'Italic': word.Selection.Font.Italic,
+                        'Underline': word.Selection.Font.Underline,
+                        'Color': word.Selection.Font.Color
+                    }
+                }
+                
+                # 检查段落是否以编号开头，如果是，去掉首行缩进
+                is_numbered_paragraph = False
+                for pattern in number_patterns:
+                    if re.match(pattern, text):
+                        is_numbered_paragraph = True
+                        break
+                
+                if is_numbered_paragraph:
+                    # 选择段落
+                    para.Range.Select()
+                    
+                    # 保持左缩进不变，但去掉首行缩进
+                    # 计算字符宽度（假设平均字符宽度为字体大小的一半）
+                    char_width = word.Selection.Font.Size / 2
+                    
+                    # 去掉约2个字符的首行缩进
+                    word.Selection.ParagraphFormat.FirstLineIndent = 0
+                    
+                    # 计数
+                    fixed_count += 1
+                
                 # 检查段落中是否包含编号模式
                 for pattern in number_patterns:
                     # 在段落中查找编号模式
@@ -265,15 +306,6 @@ class ConversionThread(QThread):
                     start_index = 0
                     if matches[0].start() <= 2:  # 允许段落开头有少量空格
                         start_index = 1
-                        
-                        # 如果第一个匹配在段落开头，确保它顶格显示
-                        if matches[0].start() > 0:
-                            # 选择段落
-                            para.Range.Select()
-                            
-                            # 设置段落格式为顶格（左对齐，无缩进）
-                            word.Selection.ParagraphFormat.LeftIndent = 0
-                            word.Selection.ParagraphFormat.FirstLineIndent = 0
                     
                     # 处理其余匹配
                     for match_index in range(start_index, len(matches)):
@@ -312,9 +344,23 @@ class ConversionThread(QThread):
                             # 选择新段落
                             new_para.Range.Select()
                             
-                            # 设置段落格式为顶格（左对齐，无缩进）
-                            word.Selection.ParagraphFormat.LeftIndent = 0
+                            # 应用与原段落相同的格式
+                            word.Selection.ParagraphFormat.LeftIndent = current_format['LeftIndent']
+                            word.Selection.ParagraphFormat.RightIndent = current_format['RightIndent']
+                            # 去掉首行缩进
                             word.Selection.ParagraphFormat.FirstLineIndent = 0
+                            word.Selection.ParagraphFormat.Alignment = current_format['Alignment']
+                            word.Selection.ParagraphFormat.LineSpacing = current_format['LineSpacing']
+                            word.Selection.ParagraphFormat.SpaceBefore = current_format['SpaceBefore']
+                            word.Selection.ParagraphFormat.SpaceAfter = current_format['SpaceAfter']
+                            
+                            # 应用字体格式
+                            word.Selection.Font.Name = current_format['Font']['Name']
+                            word.Selection.Font.Size = current_format['Font']['Size']
+                            word.Selection.Font.Bold = current_format['Font']['Bold']
+                            word.Selection.Font.Italic = current_format['Font']['Italic']
+                            word.Selection.Font.Underline = current_format['Font']['Underline']
+                            word.Selection.Font.Color = current_format['Font']['Color']
                         
                         # 计数
                         fixed_count += 1
