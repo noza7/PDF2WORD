@@ -477,7 +477,7 @@ class ConversionThread(QThread):
 class PDFToWordConverter(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PDF转Word转换器")
+        self.setWindowTitle("Noza出品")
         self.setMinimumSize(600, 400)
         
         # 设置应用样式

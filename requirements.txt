@@ -1,0 +1,21 @@
+
+
+# requirements.txt
+
+```
+PyQt6>=6.0.0
+pywin32>=300
+```
+
+这个简单的requirements.txt文件包含了运行PDF转Word转换工具所需的两个主要依赖项：
+
+1. **PyQt6** - 用于创建图形用户界面
+2. **pywin32** - 用于与Windows API和Microsoft Word进行交互
+
+用户可以通过以下命令安装这些依赖：
+
+```
+pip install -r requirements.txt
+```
+
+这将确保安装正确版本的依赖项，使应用程序能够正常运行。
