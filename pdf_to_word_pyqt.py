@@ -11,6 +11,7 @@ class ConversionThread(QThread):
     """用于在后台执行PDF到Word转换的线程"""
     progress_signal = pyqtSignal(int)
     finished_signal = pyqtSignal(bool, str)
+    superscript_fixed_signal = pyqtSignal(int)  # 新增信号，传递修复的上标数量
     
     def __init__(self, pdf_path, word_path):
         super().__init__()
@@ -26,7 +27,8 @@ class ConversionThread(QThread):
             if os.path.exists(self.word_path) and os.path.getsize(self.word_path) > 100:
                 # 修复上标数字问题
                 try:
-                    self.fix_superscript_numbers(self.word_path)
+                    superscript_count = self.fix_superscript_numbers(self.word_path)
+                    self.superscript_fixed_signal.emit(superscript_count)
                 except Exception as e:
                     print(f"修复上标数字失败: {str(e)}")
                 
@@ -85,7 +87,7 @@ class ConversionThread(QThread):
             raise Exception(f"使用Word转换失败: {str(e)}")
     
     def fix_superscript_numbers(self, docx_path):
-        """修复Word文档中的上标数字，只处理数字而不影响其他格式"""
+        """修复Word文档中的所有上标，使其格式与相邻字符一致"""
         import win32com.client
         import pythoncom
         
@@ -100,30 +102,87 @@ class ConversionThread(QThread):
             # 打开Word文档
             doc = word.Documents.Open(docx_path)
             
-            # 使用查找替换功能专门处理上标数字
-            for i in range(10):  # 处理0-9的数字
-                # 设置查找条件：查找上标格式的数字
-                word.Selection.Find.ClearFormatting()
-                word.Selection.Find.Text = str(i)
-                word.Selection.Find.SuperScript = True
+            # 记录处理的上标数量
+            superscript_count = 0
+            
+            # 使用查找替换功能处理所有上标
+            word.Selection.Find.ClearFormatting()
+            word.Selection.Find.Font.Superscript = True  # 查找上标格式
+            word.Selection.Find.Text = ""  # 空字符串表示任何文本
+            
+            # 循环查找所有上标并处理
+            found = word.Selection.Find.Execute(
+                FindText="",
+                MatchCase=False,
+                MatchWholeWord=False,
+                MatchWildcards=False,
+                MatchSoundsLike=False,
+                MatchAllWordForms=False,
+                Forward=True,
+                Wrap=1,  # wdFindContinue
+                Format=True
+            )
+            
+            while found:
+                # 记录找到的上标内容
+                superscript_text = word.Selection.Text
                 
-                # 设置替换内容：相同的数字但不是上标
-                word.Selection.Find.Replacement.ClearFormatting()
-                word.Selection.Find.Replacement.Text = str(i)
+                # 获取当前选择的范围
+                current_range = word.Selection.Range
                 
-                # 执行替换
-                word.Selection.Find.Execute(
-                    FindText=str(i),
-                    MatchCase=True,
-                    MatchWholeWord=True,
+                # 尝试获取前一个字符的格式
+                try:
+                    # 创建一个新的范围，位于当前选择之前
+                    prev_range = doc.Range(current_range.Start - 1, current_range.Start)
+                    
+                    # 如果前一个字符存在且不是空格或特殊字符
+                    if prev_range.Text and prev_range.Text.strip():
+                        # 移除上标格式
+                        word.Selection.Font.Superscript = False
+                        
+                        # 应用前一个字符的格式
+                        word.Selection.Font.Name = prev_range.Font.Name
+                        word.Selection.Font.Size = prev_range.Font.Size
+                        word.Selection.Font.Bold = prev_range.Font.Bold
+                        word.Selection.Font.Italic = prev_range.Font.Italic
+                        word.Selection.Font.Underline = prev_range.Font.Underline
+                        word.Selection.Font.Color = prev_range.Font.Color
+                    else:
+                        # 如果前一个字符不存在或是空格，尝试获取后一个字符的格式
+                        next_range = doc.Range(current_range.End, current_range.End + 1)
+                        
+                        if next_range.Text and next_range.Text.strip():
+                            # 移除上标格式
+                            word.Selection.Font.Superscript = False
+                            
+                            # 应用后一个字符的格式
+                            word.Selection.Font.Name = next_range.Font.Name
+                            word.Selection.Font.Size = next_range.Font.Size
+                            word.Selection.Font.Bold = next_range.Font.Bold
+                            word.Selection.Font.Italic = next_range.Font.Italic
+                            word.Selection.Font.Underline = next_range.Font.Underline
+                            word.Selection.Font.Color = next_range.Font.Color
+                        else:
+                            # 如果前后都没有可参考的字符，只移除上标格式
+                            word.Selection.Font.Superscript = False
+                except:
+                    # 如果获取相邻字符格式失败，只移除上标格式
+                    word.Selection.Font.Superscript = False
+                
+                # 计数
+                superscript_count += 1
+                
+                # 继续查找下一个
+                found = word.Selection.Find.Execute(
+                    FindText="",
+                    MatchCase=False,
+                    MatchWholeWord=False,
                     MatchWildcards=False,
                     MatchSoundsLike=False,
                     MatchAllWordForms=False,
                     Forward=True,
                     Wrap=1,  # wdFindContinue
-                    Format=True,
-                    ReplaceWith=str(i),
-                    Replace=2  # wdReplaceAll
+                    Format=True
                 )
             
             # 保存文档
@@ -131,6 +190,13 @@ class ConversionThread(QThread):
             
             # 关闭文档
             doc.Close()
+            
+            # 打印处理结果
+            print(f"已修复 {superscript_count} 处上标格式")
+            
+            # 返回处理的上标数量
+            return superscript_count
+            
         finally:
             # 退出Word应用
             word.Quit()
@@ -377,6 +443,7 @@ class PDFToWordConverter(QMainWindow):
         self.conversion_thread = ConversionThread(pdf_path, word_path)
         self.conversion_thread.progress_signal.connect(self.update_progress)
         self.conversion_thread.finished_signal.connect(self.conversion_finished)
+        self.conversion_thread.superscript_fixed_signal.connect(self.update_superscript_info)
         self.conversion_thread.start()
     
     def update_progress(self, value):
@@ -410,6 +477,13 @@ class PDFToWordConverter(QMainWindow):
                 "错误", 
                 f"转换过程中发生错误:\n{error_msg}\n\n请确保您的系统上安装了Microsoft Word，并且可以打开PDF文件。"
             )
+    
+    def update_superscript_info(self, count):
+        """更新上标修复信息"""
+        if count > 0:
+            self.status_label.setText(f"转换成功! 已修复 {count} 处上标格式")
+        else:
+            self.status_label.setText("转换成功! 未发现上标格式")
 
 
 if __name__ == "__main__":
